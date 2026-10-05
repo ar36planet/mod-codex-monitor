@@ -10,7 +10,7 @@ Claude Code 的 mod：在 Claude Code 裡開一個 pane，即時顯示**目前�
 | --- | --- |
 | [codex plugin](https://github.com/openai/codex-plugin-cc)（`/codex:rescue` 等） | plugin 的 `state.json` 為每個 job 記下 Claude 的 `sessionId` 與 Codex 的 `threadId` |
 | Bash / PowerShell 執行的 `codex exec` | 指令送出時登記，再用 rollout 檔裡的第一則提示詞比對指令內容；同一個指令裡有幾個 `codex exec` 就登記幾筆 |
-| [claude-codex-bridge](https://github.com/ar36planet/claude-codex-bridge) 的 `codex_message_send` | 從工具的輸入或回傳結果取出 `threadId` |
+| [claude-codex-bridge](https://github.com/ar36planet/claude-codex-bridge-public) 的 `codex_message_send` | 從工具的輸入或回傳結果取出 `threadId` |
 
 取得 `threadId` 之後，讀 `~/.codex/sessions/` 底下對應的 rollout 檔（`rollout-*-<threadId>.jsonl`）來顯示內容。
 

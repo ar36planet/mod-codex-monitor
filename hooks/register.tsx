@@ -58,7 +58,7 @@ const oneLine = (text: string, max: number) => {
 
 // 在 next 之前登記，背景執行或跑很久的 exec 也能馬上出現在清單；
 // 一個指令裡有幾個 codex exec 就登記幾筆
-async function trackExec($: EngineInterface, command: string) {
+async function trackExec($: EngineInterface, command: unknown) {
   const count = countCodexExecs(command)
   if (count === 0) return
   const now = await $.clock.now()
@@ -72,7 +72,7 @@ async function trackExec($: EngineInterface, command: string) {
     isRunning: true,
     startedAt: now,
     updatedAt: now,
-    command,
+    command: String(command),
   }))
   await update($, tracked, list => [...list, ...added])
 }
@@ -373,21 +373,28 @@ export const register: Register = on => {
 
     const entryRow = (entry: Entry) => {
       // 分格時每筆固定一行，各格高度才可預期
-      const isProse = (entry.kind === 'codex' || entry.kind === 'user') && !isSplit
+      const isProse = (entry.kind === 'codex' || entry.kind === 'user' || entry.kind === 'error') && !isSplit
 
+      // 時間與標籤固定寬度不縮；內容那欄要能縮窄，否則 desktop 會把它排成一長行再切掉
       return (
         <Box flexDirection="row" gap={1}>
-          <Text dimColor>{entry.time}</Text>
-          <Text color={COLORS[entry.kind]} bold={entry.kind !== 'output'}>
-            {LABELS[entry.kind]}
-          </Text>
-          <Text
-            color={entry.kind === 'error' ? 'red' : undefined}
-            dimColor={entry.kind === 'output'}
-            wrap={isProse ? 'wrap' : 'truncate-end'}
-          >
-            {isProse ? entry.text.slice(0, 1200) : entry.text.replace(/\s+/g, ' ')}
-          </Text>
+          <Box flexShrink={0}>
+            <Text dimColor>{entry.time}</Text>
+          </Box>
+          <Box flexShrink={0}>
+            <Text color={COLORS[entry.kind]} bold={entry.kind !== 'output'}>
+              {LABELS[entry.kind]}
+            </Text>
+          </Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            <Text
+              color={entry.kind === 'error' ? 'red' : undefined}
+              dimColor={entry.kind === 'output'}
+              wrap={isProse ? 'wrap' : 'truncate-end'}
+            >
+              {isProse ? entry.text.slice(0, 1200) : entry.text.replace(/\s+/g, ' ')}
+            </Text>
+          </Box>
         </Box>
       )
     }
