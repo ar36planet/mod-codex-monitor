@@ -2,8 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Entry, Tracked } from '../types'
-import { parseRollout } from './parse'
+import { emptyParsed, feedRollout, parseRollout } from './parse'
 import type { Parsed } from './parse'
+import { START, takeLines } from './reader'
+import type { Cursor } from './reader'
 import {
   EMPTY_ROLLOUT,
   countCodexExecs,
@@ -17,10 +19,12 @@ import type { ExecCandidate } from './sources'
 
 const PANE = 'codex-monitor'
 const POLL_MS = 3000
-// $.fs.read 上限 4 MiB；超過這個大小改用 pwsh 只讀檔尾
+// 不超過這個大小的 rollout 用 $.fs.read 整個讀再切；更大的用 pwsh 跳到上次的位置只讀新的部分
 const WHOLE_READ_LIMIT = 1024 * 1024
+// $.fs.read 上限 4 MiB
 const FS_READ_MAX = 4 * 1024 * 1024
-const TAIL_LINES = 400
+// 每輪每個 rollout 最多讀這麼多，沒讀完的下一輪接著讀；base64 後仍在 stdout 的 4 MiB 上限內
+const BATCH_BYTES = 2 * 1024 * 1024
 const SLACK_MS = 5000
 const LOG_ENTRIES = 200
 // 清單用數字鍵 1–9 釘選，最多顯示 9 筆
@@ -32,6 +36,7 @@ const BRIDGE_SEND = 'mcp__claude-codex-bridge__codex_message_send'
 const tracked = atom({ plugin: 'codex-monitor', key: 'tracked' } as const, [])
 const logs = atom({ plugin: 'codex-monitor', key: 'logs' } as const, {})
 const view = atom({ plugin: 'codex-monitor', key: 'view' } as const, { latestKey: '', pinned: '' })
+const polledAt = atom({ plugin: 'codex-monitor', key: 'polledAt' } as const, 0)
 
 const COLORS: Record<Entry['kind'], string | undefined> = {
   user: 'cyan',
@@ -54,6 +59,21 @@ const LABELS: Record<Entry['kind'], string> = {
 const oneLine = (text: string, max: number) => {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length > max ? flat.slice(0, Math.max(1, max - 1)) + '…' : flat
+}
+
+const clockTime = (ms: number) => {
+  const date = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+const fromBase64 = (base64: string) => {
+  const raw = atob(base64)
+  const bytes = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+
+  return bytes
 }
 
 // 在 next 之前登記，背景執行或跑很久的 exec 也能馬上出現在清單；
@@ -80,7 +100,8 @@ async function trackExec($: EngineInterface, command: unknown) {
 export const register: Register = on => {
   // 模組重載時這些快取會清空，追蹤清單本身在 $.state 裡不受影響
   const rolloutPaths = new Map<string, string>()
-  const rollouts = new Map<string, { mtime: number; size: number; changedAt: number; parsed: Parsed }>()
+  // isCaughtUp：上一次讀已經讀到檔尾（之後完成的 turn 才跳 toast）
+  const rollouts = new Map<string, { cursor: Cursor; parsed: Parsed; changedAt: number; isCaughtUp: boolean }>()
   const toastedTurns = new Map<string, string>()
   const notExec = new Set<string>()
   let isBusy = false
@@ -120,18 +141,26 @@ export const register: Register = on => {
       return days
     }
 
-    const readText = async (path: string, size: number) => {
-      if (size <= WHOLE_READ_LIMIT) return $.fs.read(path)
+    // 讀 [offset, offset + length) 這段 bytes。傳 base64 而不是文字，避開 pwsh 輸出的字碼頁問題
+    const readBytes = async (path: string, offset: number, length: number, size: number) => {
+      if (size <= WHOLE_READ_LIMIT) {
+        const { base64 } = await $.fs.read(path, { as: 'bytes' })
+        return fromBase64(base64).subarray(offset, offset + length)
+      }
       const quoted = path.replace(/'/g, "''")
       const ran = await $.process.run([
         'pwsh',
         '-NoProfile',
         '-Command',
-        // pwsh 輸出到 pipe 時預設用系統字碼頁（繁中 Windows 是 Big5），中文會變亂碼
-        `[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Content -LiteralPath '${quoted}' -Tail ${TAIL_LINES} -Encoding utf8`,
+        // Codex 還開著檔案在寫，要允許共用
+        `$f = [IO.File]::Open('${quoted}', 'Open', 'Read', 'ReadWrite, Delete'); ` +
+          `try { [void]$f.Seek(${offset}, 'Begin'); $b = [byte[]]::new(${length}); $n = 0; ` +
+          `while ($n -lt ${length}) { $r = $f.Read($b, $n, ${length} - $n); if ($r -le 0) { break }; $n += $r }; ` +
+          `[Console]::Out.Write([Convert]::ToBase64String($b, 0, $n)) } finally { $f.Dispose() }`,
       ])
+      if (ran.exitCode !== 0) throw new Error(`reading ${path.split('/').pop()}: ${oneLine(ran.stderr, 160)}`)
 
-      return ran.stdout
+      return fromBase64(ran.stdout.trim())
     }
 
     const pluginJobs = async (): Promise<Tracked[]> => {
@@ -190,22 +219,33 @@ export const register: Register = on => {
       return undefined
     }
 
-    // 讀有變動的 rollout；回傳最近一次看到它變動的時間（沒有 rollout 為 0）。
-    // Windows 上 Codex 寫 rollout 時 mtime 停在建檔時間，只有大小會變，所以兩者都比。
+    // 從上次讀到的位置往後讀一批新的行；回傳最近一次讀到新內容的時間（沒有 rollout 為 0）。
+    // Windows 上 Codex 寫 rollout 時 mtime 停在建檔時間，所以只看大小。
     const refreshRollout = async (one: Tracked, now: number) => {
       const path = one.threadId ? await findRollout(one.threadId) : undefined
       if (!path) return 0
-      const stat = await $.fs.stat(path)
-      const cached = rollouts.get(one.threadId)
-      if (cached && cached.mtime === stat.mtimeMs && cached.size === stat.size) return cached.changedAt
-      const parsed = parseRollout(await readText(path, stat.size))
-      rollouts.set(one.threadId, { mtime: stat.mtimeMs, size: stat.size, changedAt: now, parsed })
+      const { size } = await $.fs.stat(path)
+      let state = rollouts.get(one.threadId)
+      // 檔案變短表示被重寫，從頭讀
+      if (!state || size < state.cursor.offset) {
+        state = { cursor: START, parsed: emptyParsed(), changedAt: 0, isCaughtUp: false }
+        rollouts.set(one.threadId, state)
+      }
+      if (size === state.cursor.offset) return state.changedAt
 
-      const done = parsed.lastCompleted
-      const seen = toastedTurns.get(one.threadId)
-      if (done && done.turnId !== seen) {
-        // 第一次看到這條 thread 只記住，不為舊 turn 跳 toast
-        if (cached) $.ui.toast(`Codex ${done.isError ? '✗' : '✓'} ${one.title}: ${done.text}`)
+      const length = Math.min(BATCH_BYTES, size - state.cursor.offset)
+      const taken = takeLines(await readBytes(path, state.cursor.offset, length, size), state.cursor, BATCH_BYTES)
+      const wasCaughtUp = state.isCaughtUp
+      state.isCaughtUp = state.cursor.offset + length >= size
+      state.cursor = taken.cursor
+      if (!taken.text) return state.changedAt
+      feedRollout(state.parsed, taken.text)
+      state.changedAt = now
+
+      const done = state.parsed.lastCompleted
+      if (done && done.turnId !== toastedTurns.get(one.threadId)) {
+        // 補讀舊內容時只記住，不為舊 turn 跳 toast
+        if (wasCaughtUp) $.ui.toast(`Codex ${done.isError ? '✗' : '✓'} ${one.title}: ${done.text}`)
         toastedTurns.set(one.threadId, done.turnId)
       }
 
@@ -249,8 +289,17 @@ export const register: Register = on => {
           ...jobs.map(job => ({ ...job, ...pick(current.find(one => one.key === job.key)) })),
         ]
 
+        // 一條 thread 讀失敗不影響其他條
         const changedAt = new Map<string, number>()
-        for (const one of merged) changedAt.set(one.key, await refreshRollout(one, now))
+        const failures: string[] = []
+        for (const one of merged) {
+          try {
+            changedAt.set(one.key, await refreshRollout(one, now))
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error))
+            changedAt.set(one.key, rollouts.get(one.threadId)?.changedAt ?? 0)
+          }
+        }
         const filled = merged.map(one => withRollout(one, now))
 
         await update($, tracked, list => {
@@ -271,12 +320,16 @@ export const register: Register = on => {
           .filter(one => (changedAt.get(one.key) ?? 0) > 0)
           .sort((a, b) => (changedAt.get(b.key) ?? 0) - (changedAt.get(a.key) ?? 0))[0]
         if (latest) await update($, view, shown => ({ ...shown, latestKey: latest.key }))
+        await update($, polledAt, () => now)
+        // state 更新本來就會重畫；這裡再明確要求一次，避免 pane 停在舊畫面
+        $.ui.invalidate('ui.render')
 
         const running = filled.filter(one => one.isRunning).length
+        const failed = failures.length > 0 ? ` · ⚠ ${oneLine(failures[0] ?? '', 80)}` : ''
         $.ui.status(
           filled.length === 0
             ? undefined
-            : `Codex ${running > 0 ? `● ${running} running` : '○ idle'} · ${filled.length} sent`,
+            : `Codex ${running > 0 ? `● ${running} running` : '○ idle'} · ${filled.length} sent${failed}`,
         )
       } catch (error) {
         $.ui.status(`codex-monitor: ${error instanceof Error ? error.message : String(error)}`)
@@ -351,6 +404,7 @@ export const register: Register = on => {
     const list = await read($, tracked)
     const allLogs = await read($, logs)
     const shown = await read($, view)
+    const lastPoll = await read($, polledAt)
 
     if (list.length === 0) {
       return <Text dimColor>This session has not sent anything to Codex yet.</Text>
@@ -367,7 +421,7 @@ export const register: Register = on => {
         : list.filter(one => one.key === (running[0]?.key ?? shown.latestKey))
     const isSplit = sections.length > 1
     const width = Math.max(20, (e.viewport?.columns ?? 80) - 6)
-    const room = Math.max(sections.length * 3, (e.viewport?.rows ?? 24) - rows.length - 4)
+    const room = Math.max(sections.length * 3, (e.viewport?.rows ?? 24) - rows.length - 5)
     const perSection = Math.max(2, Math.floor(room / Math.max(1, sections.length)) - 1)
     const setPinned = (key: string) => void update($, view, current => ({ ...current, pinned: key }))
 
@@ -401,6 +455,8 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {/* 這個時間不動就是輪詢停了；時間有動但內容沒動才是 Codex 沒寫東西 */}
+        <Text dimColor>polled {lastPoll > 0 ? clockTime(lastPoll) : '—'}</Text>
         {rows.map((one, index) => (
           <Button
             key={`row-${one.key}`}

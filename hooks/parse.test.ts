@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { parseRollout } from './parse'
+import { emptyParsed, feedRollout, parseRollout } from './parse'
 
 const item = (timestamp: string, value: object) => ({ timestamp, type: 'event_msg', payload: { type: 'item_completed', item: value } })
 
@@ -61,4 +61,20 @@ test('an older rollout without item events still shows replies and tool names', 
     { type: 'response_item', payload: { type: 'function_call', namespace: 'clock', name: 'sleep', arguments: '{}' } },
   ]
   expect(parseRollout(jsonl(old)).entries.map(entry => entry.text)).toEqual(['Hi', 'clock.sleep'])
+})
+
+test('feeding the rollout a few lines at a time gives the same result as reading it whole', () => {
+  const parsed = emptyParsed()
+  for (const row of rows) feedRollout(parsed, JSON.stringify(row) + '\n')
+  expect(parsed.entries).toEqual(parseRollout(jsonl(rows)).entries)
+  expect(parsed.cwd).toBe('C:\\Work\\ASAC')
+})
+
+test('response_item lines read before the first item event are dropped once one arrives', () => {
+  const reply = { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Hi' }] } }
+  const parsed = feedRollout(emptyParsed(), JSON.stringify(reply))
+  expect(parsed.entries.map(entry => entry.text)).toEqual(['Hi'])
+
+  feedRollout(parsed, JSON.stringify(item('2026-10-02T03:10:53Z', { type: 'AgentMessage', content: [{ type: 'Text', text: 'Done.' }] })))
+  expect(parsed.entries.map(entry => entry.text)).toEqual(['Done.'])
 })

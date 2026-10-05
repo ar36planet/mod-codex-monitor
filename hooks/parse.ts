@@ -5,9 +5,17 @@ export type Parsed = {
   cwd: string
   isRunning: boolean
   lastCompleted?: { turnId: string; text: string; isError: boolean }
+  // 看過 item_completed 就是新格式，response_item 的項目不再顯示
+  hasItems: boolean
 }
 
 const MAX_ENTRIES = 300
+// 從 response_item 來的項目；確定是新格式時要拿掉
+const fromResponse = new WeakSet<Entry>()
+
+export function emptyParsed(): Parsed {
+  return { entries: [], cwd: '', isRunning: false, hasItems: false }
+}
 
 function oneLine(text: string, max = 200): string {
   const flat = text.replace(/\s+/g, ' ').trim()
@@ -51,42 +59,47 @@ function firstLine(text: unknown): string {
 // 以 event_msg/item_completed 為主（真正的指令與回覆）；
 // response_item 的工具呼叫是 JS 包裝與 JSON 輸出，只在沒有 item_completed 的舊格式才用。
 export function parseRollout(jsonl: string): Parsed {
-  const rows: any[] = []
+  return feedRollout(emptyParsed(), jsonl)
+}
+
+// 把新讀到的幾行接在 parsed 後面（直接改動 parsed）
+export function feedRollout(parsed: Parsed, jsonl: string): Parsed {
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue
+    let row: any
     try {
-      rows.push(JSON.parse(line))
+      row = JSON.parse(line)
     } catch {
-      // 讀檔尾時切到半行
+      // 不完整或壞掉的一行
+      continue
     }
-  }
-  const hasItems = rows.some(row => row?.type === 'event_msg' && row.payload?.type === 'item_completed')
-
-  const entries: Entry[] = []
-  let cwd = ''
-  let isRunning = false
-  let lastCompleted: Parsed['lastCompleted']
-
-  for (const row of rows) {
     const p = row?.payload ?? {}
     const time = clockTime(row?.timestamp)
     const push = (kind: Entry['kind'], text: string) => {
-      if (text) entries.push({ kind, text, time })
+      if (!text) return
+      const entry = { kind, text, time }
+      if (row.type === 'response_item') fromResponse.add(entry)
+      parsed.entries.push(entry)
+    }
+
+    if (row?.type === 'event_msg' && p.type === 'item_completed' && !parsed.hasItems) {
+      parsed.hasItems = true
+      parsed.entries = parsed.entries.filter(entry => !fromResponse.has(entry))
     }
 
     if (row.type === 'session_meta' || row.type === 'turn_context') {
-      if (typeof p.cwd === 'string') cwd = p.cwd
+      if (typeof p.cwd === 'string') parsed.cwd = p.cwd
     } else if (row.type === 'event_msg') {
       if (p.type === 'task_started') {
-        isRunning = true
+        parsed.isRunning = true
         push('turn', '── turn started ──')
       } else if (p.type === 'task_complete') {
-        isRunning = false
+        parsed.isRunning = false
         const error = p.error?.message
         const secs = typeof p.duration_ms === 'number' ? ` (${Math.round(p.duration_ms / 1000)}s)` : ''
         if (error) push('error', oneLine(error, 400))
         push('turn', `── turn complete${secs} ──`)
-        lastCompleted = {
+        parsed.lastCompleted = {
           turnId: String(p.turn_id ?? ''),
           text: oneLine(error ?? p.last_agent_message ?? 'done', 120),
           isError: Boolean(error),
@@ -104,7 +117,7 @@ export function parseRollout(jsonl: string): Parsed {
           if (!isOk) push('output', oneLine(firstLine(item.stderr) || firstLine(item.aggregated_output), 160))
         }
       }
-    } else if (row.type === 'response_item' && !hasItems) {
+    } else if (row.type === 'response_item' && !parsed.hasItems) {
       if (p.type === 'message' && p.role === 'assistant') {
         push('codex', textOf(p.content).trim())
       } else if (p.type === 'function_call' || p.type === 'custom_tool_call') {
@@ -112,6 +125,7 @@ export function parseRollout(jsonl: string): Parsed {
       }
     }
   }
+  if (parsed.entries.length > MAX_ENTRIES) parsed.entries = parsed.entries.slice(-MAX_ENTRIES)
 
-  return { entries: entries.slice(-MAX_ENTRIES), cwd, isRunning, lastCompleted }
+  return parsed
 }

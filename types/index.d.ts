@@ -26,6 +26,7 @@ export type View = { latestKey: string; pinned: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'codex-monitor': { tracked: Tracked[]; logs: Record<string, Entry[]>; view: View }
+    // polledAt：最後一次輪詢完成的時間（ms）
+    'codex-monitor': { tracked: Tracked[]; logs: Record<string, Entry[]>; view: View; polledAt: number }
   }
 }
