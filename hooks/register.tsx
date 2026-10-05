@@ -127,7 +127,8 @@ export const register: Register = on => {
         'pwsh',
         '-NoProfile',
         '-Command',
-        `Get-Content -LiteralPath '${quoted}' -Tail ${TAIL_LINES} -Encoding utf8`,
+        // pwsh 輸出到 pipe 時預設用系統字碼頁（繁中 Windows 是 Big5），中文會變亂碼
+        `[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Content -LiteralPath '${quoted}' -Tail ${TAIL_LINES} -Encoding utf8`,
       ])
 
       return ran.stdout
