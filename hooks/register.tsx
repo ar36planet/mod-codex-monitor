@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Entry, Tracked } from '../types'
+import { clipWidth, scrollEntries, wrappedRows } from './layout'
 import { emptyParsed, feedRollout, parseRollout } from './parse'
 import type { Parsed } from './parse'
 import { START, takeLines } from './reader'
@@ -27,6 +28,8 @@ const FS_READ_MAX = 4 * 1024 * 1024
 const BATCH_BYTES = 2 * 1024 * 1024
 const SLACK_MS = 5000
 const LOG_ENTRIES = 200
+// 一則回覆最多顯示這麼多字
+const PROSE_CHARS = 1200
 // 清單用數字鍵 1–9 釘選，最多顯示 9 筆
 const LIST_ROWS = 9
 // 同時執行時最多分幾格
@@ -37,6 +40,7 @@ const tracked = atom({ plugin: 'codex-monitor', key: 'tracked' } as const, [])
 const logs = atom({ plugin: 'codex-monitor', key: 'logs' } as const, {})
 const view = atom({ plugin: 'codex-monitor', key: 'view' } as const, { latestKey: '', pinned: '' })
 const polledAt = atom({ plugin: 'codex-monitor', key: 'polledAt' } as const, 0)
+const scrollBack = atom({ plugin: 'codex-monitor', key: 'scrollBack' } as const, 0)
 
 const COLORS: Record<Entry['kind'], string | undefined> = {
   user: 'cyan',
@@ -105,6 +109,8 @@ export const register: Register = on => {
   const toastedTurns = new Map<string, string>()
   const notExec = new Set<string>()
   let isBusy = false
+  // 上次畫的 log 區最多能往回捲幾列，給 ui.scroll 夾住捲動範圍
+  let maxBack = 0
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -391,6 +397,7 @@ export const register: Register = on => {
       await update($, tracked, () => [])
       await update($, logs, () => ({}))
       await update($, view, () => ({ latestKey: '', pinned: '' }))
+      await update($, scrollBack, () => 0)
 
       return { text: 'Codex monitor cleared.' }
     }
@@ -405,6 +412,7 @@ export const register: Register = on => {
     const allLogs = await read($, logs)
     const shown = await read($, view)
     const lastPoll = await read($, polledAt)
+    const wantBack = await read($, scrollBack)
 
     if (list.length === 0) {
       return <Text dimColor>This session has not sent anything to Codex yet.</Text>
@@ -420,14 +428,34 @@ export const register: Register = on => {
         ? running.slice(-MAX_SPLIT)
         : list.filter(one => one.key === (running[0]?.key ?? shown.latestKey))
     const isSplit = sections.length > 1
-    const width = Math.max(20, (e.viewport?.columns ?? 80) - 6)
-    const room = Math.max(sections.length * 3, (e.viewport?.rows ?? 24) - rows.length - 5)
-    const perSection = Math.max(2, Math.floor(room / Math.max(1, sections.length)) - 1)
-    const setPinned = (key: string) => void update($, view, current => ({ ...current, pinned: key }))
+    const width = Math.max(20, e.props.bodyColumns ?? (e.viewport?.columns ?? 80) - 6)
+    // 時間 8 格、標籤 5 格，加上兩個間隔
+    const textColumns = Math.max(10, width - 15)
+    // 分格時每筆固定一行，各格高度才可預期
+    const isProse = (entry: Entry) => (entry.kind === 'codex' || entry.kind === 'user' || entry.kind === 'error') && !isSplit
+    const rowsOf = (entry: Entry) => (isProse(entry) ? wrappedRows(entry.text.slice(0, PROSE_CHARS), textColumns) : 1)
+    // 上面一列輪詢時間、下面是各工作的狀態，中間的 log 區自己捲動，整個畫面剛好是 pane 的高度
+    const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 24
+    // 工作清單加一列翻頁按鈕
+    const footerRows = rows.length + 1
+    const logRows = Math.max(sections.length * 2, bodyRows - 1 - footerRows)
+    // 每格扣掉一列標題
+    const perSection = Math.max(1, Math.floor(logRows / Math.max(1, sections.length)) - 1)
+    const windows = sections.map(one =>
+      scrollEntries((allLogs[one.key] ?? []).slice(-LOG_ENTRIES), perSection, rowsOf, textColumns, wantBack),
+    )
+    maxBack = Math.max(0, ...windows.map(one => one.maxBack))
+    const back = Math.min(wantBack, maxBack)
+    const setPinned = (key: string) => {
+      void update($, view, current => ({ ...current, pinned: key }))
+      void update($, scrollBack, () => 0)
+    }
+    // 一次翻半格；desktop 的滾輪不一定傳得到 mod，所以用按鈕翻
+    const page = Math.max(1, Math.floor(perSection / 2))
+    const scrollBy = (rows: number) => void update($, scrollBack, current => Math.min(maxBack, Math.max(0, current + rows)))
 
     const entryRow = (entry: Entry) => {
-      // 分格時每筆固定一行，各格高度才可預期
-      const isProse = (entry.kind === 'codex' || entry.kind === 'user' || entry.kind === 'error') && !isSplit
+      const isWrapped = isProse(entry)
 
       // 時間與標籤固定寬度不縮；內容那欄要能縮窄，否則 desktop 會把它排成一長行再切掉
       return (
@@ -444,9 +472,9 @@ export const register: Register = on => {
             <Text
               color={entry.kind === 'error' ? 'red' : undefined}
               dimColor={entry.kind === 'output'}
-              wrap={isProse ? 'wrap' : 'truncate-end'}
+              wrap={isWrapped ? 'wrap' : 'truncate-end'}
             >
-              {isProse ? entry.text.slice(0, 1200) : entry.text.replace(/\s+/g, ' ')}
+              {isWrapped ? entry.text.slice(0, PROSE_CHARS) : entry.text.replace(/\s+/g, ' ')}
             </Text>
           </Box>
         </Box>
@@ -456,30 +484,47 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {/* 這個時間不動就是輪詢停了；時間有動但內容沒動才是 Codex 沒寫東西 */}
-        <Text dimColor>polled {lastPoll > 0 ? clockTime(lastPoll) : '—'}</Text>
+        <Text dimColor wrap="truncate-end">
+          polled {lastPoll > 0 ? clockTime(lastPoll) : '—'}          {back > 0 ? ` · ↑ ${back} rows back, press ⤓ latest to follow` : ''}
+        </Text>
+        <Box flexDirection="column" flexShrink={0}>
+          {sections.length === 0 && <Text dimColor>Waiting for the rollout…</Text>}
+          {sections.map((one, index) => (
+            <Box key={`section-${one.key}`} flexDirection="column" flexShrink={0}>
+              <Text dimColor wrap="truncate-middle">
+                ── {one.isRunning ? '●' : '○'} {one.title} · {one.cwd || one.status} ──
+              </Text>
+              {(windows[index]?.shown ?? []).map(entryRow)}
+            </Box>
+          ))}
+        </Box>
         {rows.map((one, index) => (
           <Button
             key={`row-${one.key}`}
             plain
             hotkey={String(index + 1)}
             dimColor={!one.isRunning && one.key !== pinned}
-            label={oneLine(
-              `${one.key === pinned ? '📌' : ''}${one.isRunning ? '●' : '○'} [${one.source}] ${one.title} · ${one.lastLine || one.status}`,
+            label={clipWidth(
+              oneLine(`${one.key === pinned ? '📌' : ''}${one.isRunning ? '●' : '○'} [${one.source}] ${one.title} · ${one.lastLine || one.status}`, width),
               width,
             )}
             onPress={() => setPinned(one.key === pinned ? '' : one.key)}
           />
         ))}
-        {pinned && <Button key="unpin" plain hotkey="f" label="show all again" onPress={() => setPinned('')} />}
-        {sections.map(one => (
-          <Box flexDirection="column">
-            <Text dimColor wrap="truncate-middle">
-              ── {one.isRunning ? '●' : '○'} {one.title} · {one.cwd || one.status} ──
-            </Text>
-            {(allLogs[one.key] ?? []).slice(isSplit ? -perSection : -room).map(entryRow)}
-          </Box>
-        ))}
+        <Box flexDirection="row" gap={2} flexShrink={0}>
+          <Button key="older" plain hotkey="k" label="↑ older" onPress={() => scrollBy(page)} />
+          <Button key="newer" plain hotkey="j" label="↓ newer" onPress={() => scrollBy(-page)} />
+          {back > 0 && <Button key="latest" plain hotkey="l" label="⤓ latest" onPress={() => scrollBy(-back)} />}
+          {pinned && <Button key="unpin" plain hotkey="f" label="show all again" onPress={() => setPinned('')} />}
+        </Box>
       </Box>
     )
+  })
+
+  // 畫面剛好是 pane 的高度，pane 本身不會捲；滾輪改成捲中間的 log 區
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    await update($, scrollBack, back => Math.min(maxBack, Math.max(0, back - e.by)))
+
+    return {}
   })
 }

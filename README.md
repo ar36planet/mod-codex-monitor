@@ -17,23 +17,27 @@ Claude Code 的 mod：在 Claude Code 裡開一個 pane，即時顯示**目前�
 ## 畫面
 
 ```
-● [exec] exec Read src/mcp/outputBudget.mjs… · ✓ Get-Content …
-● [exec] exec Read src/mcp/selection.mjs…    · codex: I'll read …
+polled 10:57:14
 ── ● exec Read src/mcp/outputBudget.mjs… ──
 10:56:55 tool  ✓  Get-Content -LiteralPath 'src/mcp/outputBudget.mjs'
 10:57:12 codex - Measures text size in UTF-8 bytes. …
 ── ● exec Read src/mcp/selection.mjs… ──
 10:56:56 tool  ✓  Get-Content -LiteralPath 'src/mcp/selection.mjs'
 10:57:09 codex - `selectThread` returns an explicit thread ID …
+● [exec] exec Read src/mcp/outputBudget.mjs… · ✓ Get-Content …
+● [exec] exec Read src/mcp/selection.mjs…    · codex: I'll read …
 ```
 
-- **上半部**：每一筆工作一行，顯示來源、執行中（●）或結束（○），以及最新的一行動態。
-- **下半部**：自動決定顯示什麼，平常不用按鍵。
+pane 分成三層，整個畫面剛好是 pane 的高度，最上面和最下面固定不動：
+
+- **最上面**：`polled 12:01:03` 是最後一次輪詢完成的時間。這個時間沒在動，表示輪詢停了；時間有動但內容沒變，才是 Codex 沒寫東西。
+- **中間（對話）**：自動決定顯示什麼，平常不用按鍵。
   - 同時有 2 個以上在跑：分格顯示，最多 4 格，每格是該工作最後幾行。
-  - 只有 1 個在跑：顯示它的完整內容。
+  - 只有 1 個在跑：顯示它的內容。
   - 都跑完：顯示最後有動靜的那一筆。
-- **釘選**：用滑鼠點上半部某一行，下半部就固定顯示那一筆（📌），再點一次取消。用鍵盤的話，按 `ctrl+x tab` 讓 pane 接手鍵盤，再按 `1`～`9` 釘選、`f` 取消，Esc 回到輸入框。
-- **輪詢時間**：最上面的 `polled 12:01:03` 是最後一次輪詢完成的時間。這個時間沒在動，表示輪詢停了；時間有動但內容沒變，才是 Codex 沒寫東西。
+  - 預設跟著最新一筆。按最下面的 `↑ older` / `↓ newer` 往前、往後翻，每次半格；最上面會顯示往回翻了幾列，按 `⤓ latest` 回到最新並恢復跟著最新。
+- **最下面**：每一筆工作一行，顯示來源、執行中（●）或結束（○），以及最新的一行動態；最後一列是翻頁按鈕。
+- **釘選**：用滑鼠點最下面某一行，中間就固定顯示那一筆（📌），再點一次取消。用鍵盤的話，按 `ctrl+x tab` 讓 pane 接手鍵盤，再按 `1`～`9` 釘選、`f` 取消，`k` / `j` 往前、往後翻，`l` 回到最新，Esc 回到輸入框。
 - **狀態列**：`Codex ● 2 running · 3 sent`。有 rollout 讀取失敗時，後面會加上 `⚠` 和錯誤訊息，其他 thread 照常更新。
 - **Toast**：每個 turn 完成或出錯時提醒。
 
