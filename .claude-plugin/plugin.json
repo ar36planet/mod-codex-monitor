@@ -1,1 +1,9 @@
-{ "name": "codex-monitor", "version": "0.1.0", "description": "Watch the Codex work this Claude session sent out, live in a pane", "types": "./types/index.d.ts" }
+{
+  "name": "codex-monitor",
+  "version": "0.1.0",
+  "description": "Watch the Codex work this Claude session sent out, live in a pane",
+  "author": { "name": "ar36planet" },
+  "repository": "https://github.com/ar36planet/mod-codex-monitor",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

@@ -51,7 +51,7 @@ Claude Code 的 mod：在 Claude Code 裡開一個 pane，即時顯示**目前�
 1. Clone 到任意位置：
 
    ```powershell
-   git clone <repo-url> C:\Workspace\Glab\github\codex-monitor
+   git clone https://github.com/ar36planet/mod-codex-monitor.git C:\Workspace\Glab\github\codex-monitor
    ```
 
 2. 在 `%USERPROFILE%\.claude\settings.json` 的 `env` 加上這個資料夾（必須是使用者層級的 settings，專案的 settings 不會讀這個變數）：
@@ -105,3 +105,7 @@ claude plugin validate .   # 檢查 manifest 與 hooks
 claude plugin test .       # 執行 hooks/*.test.ts
 npx -p typescript@5 tsc -p .   # 型別檢查（tsconfig 在第一次載入後由 Claude Code 產生）
 ```
+
+## 授權
+
+[MIT](LICENSE)
