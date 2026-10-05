@@ -1,0 +1,4 @@
+# Claude Code 載入 mod 時產生的型別與 tsconfig
+.claude-plugin/types/
+tsconfig.json
+node_modules/

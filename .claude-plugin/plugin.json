@@ -1,0 +1,1 @@
+{ "name": "codex-monitor", "version": "0.1.0", "description": "Watch the Codex work this Claude session sent out, live in a pane", "types": "./types/index.d.ts" }
