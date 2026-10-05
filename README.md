@@ -44,7 +44,7 @@ Claude Code 的 mod：在 Claude Code 裡開一個 pane，即時顯示**目前�
 - [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)（`pwsh` 在 PATH 上）
 - 支援 mod（plugin function hooks）的 Claude Code，在 2.1.289 上開發與測試
 - [Codex CLI](https://github.com/openai/codex)，在 0.160.0 上測試
-- 選用：codex plugin、claude-codex-bridge（要監控它們派送的工作時才需要）
+- 選用：[codex plugin](https://github.com/openai/codex-plugin-cc)、[claude-codex-bridge](https://github.com/ar36planet/claude-codex-bridge-public)（要監控它們派送的工作時才需要）
 
 ## 安裝
 
