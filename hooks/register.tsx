@@ -20,7 +20,7 @@ import type { ExecCandidate } from './sources'
 
 const PANE = 'codex-monitor'
 const POLL_MS = 3000
-// 不超過這個大小的 rollout 用 $.fs.read 整個讀再切；更大的用 pwsh 跳到上次的位置只讀新的部分
+// 不超過這個大小的 rollout 用 $.fs.read 整個讀再切；更大的用 pwsh（Windows）或 tail（macOS／Linux）跳到上次的位置只讀新的部分
 const WHOLE_READ_LIMIT = 1024 * 1024
 // $.fs.read 上限 4 MiB
 const FS_READ_MAX = 4 * 1024 * 1024
@@ -120,7 +120,9 @@ export const register: Register = on => {
 
     const sessionId = await $.session.id()
     const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')
-    const temp = ((await $.env.get('TEMP')) ?? '').replace(/\\/g, '/')
+    const isWindows = /^[A-Za-z]:\//.test(home)
+    // codex plugin 的暫存位置是 os.tmpdir()：Windows 是 TEMP，macOS 是 TMPDIR
+    const temp = ((await $.env.get('TEMP')) ?? (await $.env.get('TMPDIR')) ?? '/tmp').replace(/\\/g, '/').replace(/\/+$/, '')
     const sessionsRoot = `${home}/.codex/sessions`
     const jobRoots = [`${home}/.claude/plugins/data/codex-openai-codex/state`, `${temp}/codex-companion`]
 
@@ -152,6 +154,21 @@ export const register: Register = on => {
       if (size <= WHOLE_READ_LIMIT) {
         const { base64 } = await $.fs.read(path, { as: 'bytes' })
         return fromBase64(base64).subarray(offset, offset + length)
+      }
+      if (!isWindows) {
+        // 路徑與數字當參數傳，不拼進指令字串
+        const ran = await $.process.run([
+          '/bin/sh',
+          '-c',
+          'tail -c +"$1" "$2" | head -c "$3" | base64',
+          'sh',
+          String(offset + 1),
+          path,
+          String(length),
+        ])
+        if (ran.exitCode !== 0) throw new Error(`reading ${path.split('/').pop()}: ${oneLine(ran.stderr, 160)}`)
+
+        return fromBase64(ran.stdout.replace(/\s+/g, ''))
       }
       const quoted = path.replace(/'/g, "''")
       const ran = await $.process.run([

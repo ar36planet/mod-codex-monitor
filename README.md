@@ -2,7 +2,7 @@
 
 Claude Code 的 mod：在 Claude Code 裡開一個 pane，即時顯示**目前這個 Claude session** 派出去的 Codex 工作在做什麼。
 
-> **只支援 Windows。** 讀大型 rollout 檔時會呼叫 PowerShell 7（`pwsh`），並從 `USERPROFILE`、`TEMP` 找檔案位置。
+> 支援 Windows 與 macOS。讀大型 rollout 檔時，Windows 呼叫 PowerShell 7（`pwsh`），macOS 用系統內建的 `tail`／`head`／`base64`。
 
 ## 會追蹤哪些 Codex 工作
 
@@ -45,8 +45,8 @@ pane 分成三層，整個畫面剛好是 pane 的高度，最上面和最下面
 
 ## 需求
 
-- Windows 10 / 11
-- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)（`pwsh` 在 PATH 上）
+- Windows 10 / 11，加上 [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)（`pwsh` 在 PATH 上）
+- 或 macOS（在 Darwin 25、Claude Code 2.1.310 上測試）
 - 支援 mod（plugin function hooks）的 Claude Code，在 2.1.289 上開發與測試
 - [Codex CLI](https://github.com/openai/codex)，在 0.160.0 上測試
 - 選用：[codex plugin](https://github.com/openai/codex-plugin-cc)、[claude-codex-bridge](https://github.com/ar36planet/claude-codex-bridge-public)（要監控它們派送的工作時才需要）
@@ -69,7 +69,9 @@ pane 分成三層，整個畫面剛好是 pane 的高度，最上面和最下面
    }
    ```
 
-   已經有其他 mod 時，用 `;` 分隔多個路徑。
+   macOS 的設定檔在 `~/.claude/settings.json`，路徑寫成 `/Users/<你>/…/mod-codex-monitor`。
+
+   已經有其他 mod 時，在 Windows 上用 `;` 分隔多個路徑。
 
 3. 重開 Claude Code，輸入 `/codex-monitor` 開啟 pane。
 
@@ -88,11 +90,10 @@ rollout 是增量讀取：記住上次讀到的位置，每輪只讀新增的部
 
 ## 限制
 
-- **只支援 Windows。** 見上方說明。
 - **Rollout 格式不是公開規格。** Codex 升版可能改欄位；解析器遇到不認得的欄位會略過該行。
 - **`codex exec` 的提示詞不在指令裡時**（例如從 stdin 或檔案傳入），只能依啟動時間配對；同一時間在別處手動跑的 `codex exec` 可能被誤認。超過 60 秒仍找不到 rollout 的 exec 會標成 `no rollout found`。
 - **超過 2 MiB 的單行會略過。** 通常是極大的工具輸出，略過後從下一行繼續讀。
-- **codex plugin 的 job** 以 `%USERPROFILE%\.claude\plugins\data\codex-openai-codex\state` 與 `%TEMP%\codex-companion` 為準；plugin 改了存放位置就要跟著改。
+- **codex plugin 的 job** 以 `~/.claude/plugins/data/codex-openai-codex/state` 與系統暫存資料夾（Windows 的 `%TEMP%`、macOS 的 `$TMPDIR`）底下的 `codex-companion` 為準；plugin 改了存放位置就要跟著改。
 
 ## 開發
 
